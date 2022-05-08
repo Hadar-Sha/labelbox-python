@@ -13,7 +13,7 @@ from ...annotation_types.collection import LabelCollection
 from .categories import Categories, hash_category_name
 from .annotation import COCOObjectAnnotation, RLE, get_annotation_lookup, rle_decoding
 from .image import CocoImage, get_image, get_image_id
-
+import json
 
 def mask_to_coco_object_annotation(annotation: ObjectAnnotation, annot_idx: int,
                                    image_id: int,
@@ -95,29 +95,34 @@ def process_label(
     image_root: str,
     max_annotations_per_image=10000
 ) -> Tuple[np.ndarray, List[COCOObjectAnnotation], Dict[str, str]]:
-    annot_idx = idx * max_annotations_per_image
-    image_id = get_image_id(label, idx)
-    image = get_image(label, image_root, image_id)
-    coco_annotations = []
-    annotation_lookup = get_annotation_lookup(label.annotations)
-    categories = {}
-    for class_name in annotation_lookup:
-        for annotation in annotation_lookup[class_name]:
-            if annotation.name not in categories:
-                categories[annotation.name] = hash_category_name(
-                    annotation.name)
-            if isinstance(annotation.value, Mask):
-                coco_annotations.append(
-                    mask_to_coco_object_annotation(annotation, annot_idx,
-                                                   image_id,
-                                                   categories[annotation.name]))
-            elif isinstance(annotation.value, (Polygon, Rectangle)):
-                coco_annotations.append(
-                    vector_to_coco_object_annotation(
-                        annotation, annot_idx, image_id,
-                        categories[annotation.name]))
-            annot_idx += 1
-    return image, coco_annotations, categories
+    try:
+        annot_idx = idx * max_annotations_per_image
+        image_id = get_image_id(label, idx)
+        image = get_image(label, image_root, image_id)
+        coco_annotations = []
+        annotation_lookup = get_annotation_lookup(label.annotations)
+        categories = {}
+        for class_name in annotation_lookup:
+            for annotation in annotation_lookup[class_name]:
+                if annotation.name not in categories:
+                    categories[annotation.name] = hash_category_name(
+                        annotation.name)
+                if isinstance(annotation.value, Mask):
+                    coco_annotations.append(
+                        mask_to_coco_object_annotation(annotation, annot_idx,
+                                                       image_id,
+                                                       categories[annotation.name]))
+                elif isinstance(annotation.value, (Polygon, Rectangle)):
+                    coco_annotations.append(
+                        vector_to_coco_object_annotation(
+                            annotation, annot_idx, image_id,
+                            categories[annotation.name]))
+                annot_idx += 1
+        return image, coco_annotations, categories
+    except Exception as e:
+        print(str(e))
+        print("idx {} uid {}".format(idx, label.uid))
+        return None
 
 
 class CocoInstanceDataset(BaseModel):
@@ -136,6 +141,7 @@ class CocoInstanceDataset(BaseModel):
         images = []
         futures = []
         coco_categories = {}
+        results = []
 
         if max_workers:
             with ProcessPoolExecutor(max_workers=max_workers) as exc:
@@ -147,15 +153,24 @@ class CocoInstanceDataset(BaseModel):
                     future.result() for future in tqdm(as_completed(futures))
                 ]
         else:
-            results = [
-                process_label(label, idx, image_root)
-                for idx, label in enumerate(labels)
-            ]
+            for idx, label in enumerate(labels):
+                print(idx)
+                try:
+                    result = process_label(label, idx, image_root)
+                    results.append(result)
+                except Exception as e:
+                    print(str(e))
+                    print("idx {} uid {}".format(idx,label.uid))
+
+                # if idx > 10:
+                #     break
+
 
         for result in results:
-            images.append(result[0])
-            all_coco_annotations.extend(result[1])
-            coco_categories.update(result[2])
+            if result:
+                images.append(result[0])
+                all_coco_annotations.extend(result[1])
+                coco_categories.update(result[2])
 
         category_mapping = {
             category_id: idx + 1
@@ -168,7 +183,11 @@ class CocoInstanceDataset(BaseModel):
                        isthing=1) for name, idx in coco_categories.items()
         ]
         for annot in all_coco_annotations:
-            annot.category_id = category_mapping[annot.category_id]
+            try:
+                annot.category_id = category_mapping[annot.category_id]
+            except Exception as e:
+                print(str(e))
+                print("annot.category_id {}".format(annot.category_id))
 
         return CocoInstanceDataset(info={'image_root': image_root},
                                    images=images,
