@@ -57,43 +57,48 @@ def process_label(label: Label,
     Masks become stuff
     Polygon and rectangle become thing
     """
-    annotations = get_annotation_lookup(label.annotations)
-    image_id = get_image_id(label, idx)
-    image = get_image(label, image_root, image_id)
-    canvas = np.zeros((image.height, image.width, 3))
+    try:
+        annotations = get_annotation_lookup(label.annotations)
+        image_id = get_image_id(label, idx)
+        image = get_image(label, image_root, image_id)
+        canvas = np.zeros((image.height, image.width, 3))
 
-    segments = []
-    categories = {}
-    is_thing = {}
+        segments = []
+        categories = {}
+        is_thing = {}
 
-    for class_idx, class_name in enumerate(annotations):
-        for annotation_idx, annotation in enumerate(annotations[class_name]):
-            categories[annotation.name] = hash_category_name(annotation.name)
-            if isinstance(annotation.value, Mask):
-                segment, canvas = (mask_to_coco_segment_info(
-                    canvas, annotation, class_idx + 1,
-                    categories[annotation.name]))
-                segments.append(segment)
-                is_thing[annotation.name] = 0
+        for class_idx, class_name in enumerate(annotations):
+            for annotation_idx, annotation in enumerate(annotations[class_name]):
+                categories[annotation.name] = hash_category_name(annotation.name)
+                if isinstance(annotation.value, Mask):
+                    segment, canvas = (mask_to_coco_segment_info(
+                        canvas, annotation, class_idx + 1,
+                        categories[annotation.name]))
+                    segments.append(segment)
+                    is_thing[annotation.name] = 0
 
-            elif isinstance(annotation.value, (Polygon, Rectangle)):
-                segment, canvas = vector_to_coco_segment_info(
-                    canvas,
-                    annotation,
-                    annotation_idx=(class_idx if all_stuff else annotation_idx)
-                    + 1,
-                    image=image,
-                    category_id=categories[annotation.name])
-                segments.append(segment)
-                is_thing[annotation.name] = 1 - int(all_stuff)
+                elif isinstance(annotation.value, (Polygon, Rectangle)):
+                    segment, canvas = vector_to_coco_segment_info(
+                        canvas,
+                        annotation,
+                        annotation_idx=(class_idx if all_stuff else annotation_idx)
+                        + 1,
+                        image=image,
+                        category_id=categories[annotation.name])
+                    segments.append(segment)
+                    is_thing[annotation.name] = 1 - int(all_stuff)
 
-    mask_file = str(image.file_name).replace('.jpg', '.png')
-    mask_file = Path(mask_root, mask_file)
-    Image.fromarray(canvas.astype(np.uint8)).save(mask_file)
-    return image, PanopticAnnotation(
-        image_id=image_id,
-        file_name=Path(mask_file.name),
-        segments_info=segments), categories, is_thing
+        mask_file = str(image.file_name).replace('.jpg', '.png')
+        mask_file = Path(mask_root, mask_file)
+        Image.fromarray(canvas.astype(np.uint8)).save(mask_file)
+        return image, PanopticAnnotation(
+            image_id=image_id,
+            file_name=Path(mask_file.name),
+            segments_info=segments), categories, is_thing
+    except Exception as e:
+        print(str(e))
+        print("idx {} uid {}".format(idx, label.uid))
+        return None
 
 
 class CocoPanopticDataset(BaseModel):
@@ -113,6 +118,7 @@ class CocoPanopticDataset(BaseModel):
         coco_categories = {}
         coco_things = {}
         images = []
+        results = []
 
         if max_workers:
             with ProcessPoolExecutor(max_workers=max_workers) as exc:
@@ -124,10 +130,19 @@ class CocoPanopticDataset(BaseModel):
                     future.result() for future in tqdm(as_completed(futures))
                 ]
         else:
-            results = [
-                process_label(label, idx, image_root, mask_root, all_stuff)
-                for idx, label in enumerate(labels)
-            ]
+            for idx, label in enumerate(labels):
+                print(idx)
+                try:
+                    result = process_label(label, idx, image_root, mask_root, all_stuff)
+                    results.append(result)
+                except Exception as e:
+                    print(str(e))
+                    print("idx {} uid {}".format(idx, label.uid))
+
+            # results = [
+            #     process_label(label, idx, image_root, mask_root, all_stuff)
+            #     for idx, label in enumerate(labels)
+            # ]
 
         for result in results:
             images.append(result[0])
@@ -147,9 +162,17 @@ class CocoPanopticDataset(BaseModel):
             for name, idx in coco_categories.items()
         ]
 
+        # for annot in all_coco_annotations:
+        #     for segment in annot.segments_info:
+        #         segment.category_id = category_mapping[segment.category_id]
+
         for annot in all_coco_annotations:
             for segment in annot.segments_info:
-                segment.category_id = category_mapping[segment.category_id]
+                try:
+                    segment.category_id = category_mapping[segment.category_id]
+                except Exception as e:
+                    print(str(e))
+                    print("annot.category_id {}".format(annot.category_id))
 
         return CocoPanopticDataset(info={
             'image_root': image_root,
